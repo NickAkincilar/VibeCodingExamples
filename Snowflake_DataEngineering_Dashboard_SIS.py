@@ -1,4 +1,12 @@
 # Import python packages
+
+# This is a personal project and is not affiliated with, endorsed, or sponsored by Snowflake Inc. in any way. All trademarks and registered trademarks are the property of their respective owners.
+# This code is provided on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or implied.
+# While this code is read-only and is not intended to modify any data, it may contain bugs or logical errors. 
+# The author makes no guarantee as to the accuracy, completeness, or reliability of the information returned by the code.
+# In no event shall the author be liable for any claims or damages resulting from business decisions or actions taken based on potentially incorrect information provided by this software.
+# You are solely responsible for thoroughly testing and validating the accuracy of the results before use. Use at your own risk.
+
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 import pandas as pd
