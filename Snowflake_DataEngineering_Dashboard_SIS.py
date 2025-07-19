@@ -7,6 +7,8 @@
 # In no event shall the author be liable for any claims or damages resulting from business decisions or actions taken based on potentially incorrect information provided by this software.
 # You are solely responsible for thoroughly testing and validating the accuracy of the results before use. Use at your own risk.
 
+
+# Import python packages
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
 import pandas as pd
@@ -188,6 +190,61 @@ def create_kpi_card(title, value, trend, unit=""):
     </div>
     """
 
+def create_daily_ingestion_chart(df):
+    """
+    Creates a stacked subplot chart to display daily GB, Rows, and Credits.
+    This is the recommended approach for visualizing metrics with different scales.
+    """
+    daily_summary = df.groupby('INGESTDAY').agg({
+        'TOTALGB': 'sum',
+        'TOTALROWS': 'sum',
+        'TOTALCREDITS': 'sum'
+    }).reset_index()
+
+    # Create a figure with 3 stacked subplots that share the same x-axis
+    fig = make_subplots(
+        rows=3,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.1,
+        subplot_titles=('Total GB Ingested', 'Total Rows Ingested', 'Total Credits Used')
+    )
+
+    # Plot 1: Total GB (Bar Chart)
+    fig.add_trace(
+        go.Bar(x=daily_summary['INGESTDAY'], y=daily_summary['TOTALGB'], name='GB', marker_color='green'),
+        row=1, col=1
+    )
+
+    # Plot 2: Total Rows (Line Chart)
+    fig.add_trace(
+        go.Scatter(x=daily_summary['INGESTDAY'], y=daily_summary['TOTALROWS'], name='Rows', mode='lines', line=dict(color='red')),
+        row=2, col=1
+    )
+
+    # Plot 3: Total Credits (Line Chart)
+    fig.add_trace(
+        go.Scatter(x=daily_summary['INGESTDAY'], y=daily_summary['TOTALCREDITS'], name='Credits', mode='lines', line=dict(color='blue')),
+        row=3, col=1
+    )
+
+    # Update layout for a clean, unified look
+    fig.update_layout(
+        title_text="Daily Ingestion Details",
+        height=600,
+        showlegend=False  # Legend is redundant due to subplot titles
+    )
+    
+    # Assign y-axis titles
+    fig.update_yaxes(title_text="GB", row=1, col=1)
+    fig.update_yaxes(title_text="Rows", row=2, col=1)
+    fig.update_yaxes(title_text="Credits", row=3, col=1)
+
+    # Assign x-axis title only to the bottom chart
+    fig.update_xaxes(title_text="Date", row=3, col=1)
+
+    return fig
+
 def create_trend_chart(df, metric_col, title):
     """Create trend line chart"""
 
@@ -196,9 +253,9 @@ def create_trend_chart(df, metric_col, title):
     fig.add_trace(go.Scatter(x=daily_trend['INGESTDAY'], y=daily_trend[metric_col], mode='lines+markers', name=title, line=dict(color='#1f77b4', width=3), marker=dict(size=6)))
     fig.update_layout(
         legend=dict(
-            orientation="h",      # horizontal legend
+            orientation="h",       # horizontal legend
             yanchor="bottom",
-            y=1.02,               # a bit above the plot
+            y=1.02,                # a bit above the plot
             xanchor="center",
             x=0.5
         )
@@ -310,9 +367,16 @@ def main():
     avg_efficiency = df_filtered['TOTALROWS'].sum() / df_filtered['TOTALCREDITS'].sum() if df_filtered['TOTALCREDITS'].sum() else 0
     col4.metric("Rows per Credit", f"{avg_efficiency:,.0f}", "Efficiency Metric")
     
-    st.markdown('<br><br>', unsafe_allow_html=True)
+    st.markdown('<br>', unsafe_allow_html=True)
+    st.markdown("---") # Visual separator
 
+    # --- NEW CHART SECTION ---
+    st.header("💾 Daily Ingestion Volume")
+    st.plotly_chart(create_daily_ingestion_chart(df_filtered), use_container_width=True)
     
+    st.markdown('<br>', unsafe_allow_html=True)
+    st.markdown("---") # Visual separator
+
     st.header("📊 Trend Analysis")
     col1, col2 = st.columns(2)
     with col1:
