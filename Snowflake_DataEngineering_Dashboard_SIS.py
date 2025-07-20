@@ -1,5 +1,3 @@
-# Import python packages
-
 # This is a personal project and is not affiliated with, endorsed, or sponsored by Snowflake Inc. in any way. All trademarks and registered trademarks are the property of their respective owners.
 # This code is provided on an "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or implied.
 # While this code is read-only and is not intended to modify any data, it may contain bugs or logical errors. 
@@ -45,10 +43,10 @@ st.markdown("""
         text-align: center;
     }
     .trend-up {
-        color: #28a745;
+        color: #dc3545; /* Red for increase in cost - bad */
     }
     .trend-down {
-        color: #dc3545;
+        color: #28a745; /* Green for decrease in cost - good */
     }
     .trend-neutral {
         color: #6c757d;
@@ -63,16 +61,19 @@ def init_snowflake_connection():
 
 
 @st.cache_data(ttl=300)  # Cache for 5 minutes
-def load_data_from_snowflake():
-    """Load data from Snowflake using Snowpark"""
+def load_data_from_snowflake(period_days):
+    """Load data from Snowflake using a dynamic period in the WHERE clause."""
     session = init_snowflake_connection()
     
-    if session is None :
-        return generate_sample_data()
+    if session is None:
+        # Pass period_days to generate sufficient sample data
+        return generate_sample_data(period_days)
     
     try:
-        # MODIFIED QUERY: Dynamically filters for the last 3 months of data.
-        query_1 = '''
+        # Fetch data for the selected period plus the prior period for comparison
+        lookback_days = period_days * 2
+
+        query_1 = f'''
             WITH copy_aggr AS (
                 -- gives one row per copy job vs. row per file
                 SELECT
@@ -107,7 +108,7 @@ def load_data_from_snowflake():
                 SUM(file_size) / (1024*1024*1024) AS TotalGB,
                 SUM(CreditsUsed) AS TotalCredits
             FROM IngestHistory
-            WHERE IngestDay >= DATEADD(week, -4, CURRENT_DATE()) -- Filters for last 3 months
+            WHERE IngestDay >= DATEADD(day, -{lookback_days}, CURRENT_DATE()) -- DYNAMIC PERIOD FILTER
             GROUP BY ALL
             ORDER BY IngestDay DESC
         '''
@@ -116,7 +117,8 @@ def load_data_from_snowflake():
         # Convert to Pandas DataFrame
         df = df_snowpark.to_pandas()
         
-        # Ensure proper data types
+        # Ensure proper data types and consistent column names
+        df.columns = [col.upper() for col in df.columns]
         df['INGESTDAY'] = pd.to_datetime(df['INGESTDAY'])
         df['TOTALROWS'] = pd.to_numeric(df['TOTALROWS'])
         df['TOTALGB'] = pd.to_numeric(df['TOTALGB'])
@@ -124,196 +126,300 @@ def load_data_from_snowflake():
         
         return df
         
-        
     except Exception as e:
         st.error(f"Error loading data from Snowflake: {str(e)}")
-        return generate_sample_data()
+        return generate_sample_data(period_days)
 
-def generate_sample_data():
+def generate_sample_data(period_days):
     """Generate sample data for demonstration"""
+    st.warning("Could not connect to Snowflake. Generating sample data.", icon="⚠️")
     np.random.seed(42)
     end_date = datetime.now().date()
-    start_date = end_date - timedelta(days=90) # Generate 90 days of sample data
+    # Generate enough data for the selected period and the prior one
+    start_date = end_date - timedelta(days=(period_days * 2)) 
     date_range = pd.date_range(start=start_date, end=end_date, freq='D')
     warehouses = ['COMPUTE_WH', 'LOAD_WH', 'ANALYTICS_WH', 'ETL_WH']
     warehouse_sizes = ['SMALL', 'MEDIUM', 'LARGE', 'X-LARGE']
     data = []
     for date in date_range:
         for warehouse in warehouses:
-            base_rows = np.random.randint(100000, 5000000)*10
-            base_gb = base_rows / (np.random.randint(20000, 120000)*np.random.randint(5, 25))
+            # Simulate some days with no activity for a warehouse
+            if np.random.rand() > 0.8:
+                continue
+            base_rows = np.random.randint(100000, 5000000) * 10
+            base_gb = base_rows / (np.random.randint(20000, 120000) * np.random.randint(5, 25))
             size_multiplier = {'SMALL': 1, 'MEDIUM': 2, 'LARGE': 4, 'X-LARGE': 8}
             warehouse_size = np.random.choice(warehouse_sizes)
-            credits = max(0.1, (base_gb * 0.1 * size_multiplier[warehouse_size]) + np.random.normal(0, 0.5))/100
+            credits = max(0.1, (base_gb * 0.1 * size_multiplier[warehouse_size]) + np.random.normal(0, 0.5)) * 10
             data.append({
                 'INGESTDAY': date, 'WAREHOUSE_NAME': warehouse, 'WAREHOUSE_SIZE': warehouse_size,
                 'TOTALROWS': int(base_rows), 'TOTALGB': round(base_gb, 2), 'TOTALCREDITS': round(credits, 3)
             })
-    return pd.DataFrame(data)
+    df = pd.DataFrame(data)
+    df.columns = [col.upper() for col in df.columns]
+    return df
 
-def calculate_kpis(df):
-    """Calculate KPI metrics"""
-    df['CREDITS_PER_MILLION_ROWS'] = (df['TOTALCREDITS'] / df['TOTALROWS']) * 1000000
-    df['CREDITS_PER_GB'] = df['TOTALCREDITS'] / df['TOTALGB']
-    df.replace([np.inf, -np.inf], np.nan, inplace=True)
+def add_efficiency_metrics(df):
+    """Helper function to calculate and add efficiency metric columns to a dataframe."""
+    if df.empty:
+        return df
+    df_copy = df.copy()
+    # Avoid division by zero issues
+    df_copy['TOTALROWS'] = df_copy['TOTALROWS'].replace(0, np.nan)
+    df_copy['TOTALGB'] = df_copy['TOTALGB'].replace(0, np.nan)
     
-    current_date = df['INGESTDAY'].max()
-    current_period = df[df['INGESTDAY'] >= (current_date - timedelta(days=7))]
-    previous_period = df[(df['INGESTDAY'] >= (current_date - timedelta(days=14))) & (df['INGESTDAY'] < (current_date - timedelta(days=7)))]
+    df_copy['CREDITS_PER_MILLION_ROWS'] = (df_copy['TOTALCREDITS'] / df_copy['TOTALROWS']) * 1_000_000
+    df_copy['CREDITS_PER_GB'] = df_copy['TOTALCREDITS'] / df_copy['TOTALGB']
+    df_copy.replace([np.inf, -np.inf], np.nan, inplace=True)
+    return df_copy
+
+
+def format_large_number(num):
+    """Formats a large number with K, M, B, T suffixes."""
+    if num is None or pd.isna(num):
+        return "N/A"
+    if abs(num) < 1000:
+        return f"{num:,.0f}"
     
-    current_credits_per_million = current_period['CREDITS_PER_MILLION_ROWS'].mean()
-    previous_credits_per_million = previous_period['CREDITS_PER_MILLION_ROWS'].mean()
-    current_credits_per_gb = current_period['CREDITS_PER_GB'].mean()
-    previous_credits_per_gb = previous_period['CREDITS_PER_GB'].mean()
+    magnitude = 0
+    while abs(num) >= 1000:
+        magnitude += 1
+        num /= 1000.0
     
-    trend_credits_per_million = ((current_credits_per_million - previous_credits_per_million) / previous_credits_per_million * 100) if previous_credits_per_million else 0
-    trend_credits_per_gb = ((current_credits_per_gb - previous_credits_per_gb) / previous_credits_per_gb * 100) if previous_credits_per_gb else 0
+    # Format to one decimal place and add the appropriate suffix
+    return f"{num:.1f}{['', 'K', 'M', 'B', 'T'][magnitude]}"
+
+
+def calculate_kpis(current_period_df, previous_period_df):
+    """Calculate KPI metrics based on two dataframes, handling empty prior dataframe."""
+    # Calculate current period metrics
+    current_credits_per_million = current_period_df['CREDITS_PER_MILLION_ROWS'].mean()
+    current_credits_per_gb = current_period_df['CREDITS_PER_GB'].mean()
+
+    # Initialize previous period metrics as NaN (Not a Number)
+    previous_credits_per_million = np.nan
+    previous_credits_per_gb = np.nan
+
+    # Only try to calculate previous metrics if the dataframe has data
+    if not previous_period_df.empty:
+        previous_credits_per_million = previous_period_df['CREDITS_PER_MILLION_ROWS'].mean()
+        previous_credits_per_gb = previous_period_df['CREDITS_PER_GB'].mean()
+    
+    # Handle trend calculation if prior period data is missing or zero
+    if pd.notna(previous_credits_per_million) and previous_credits_per_million > 0:
+        trend_credits_per_million = ((current_credits_per_million - previous_credits_per_million) / previous_credits_per_million * 100)
+    else:
+        trend_credits_per_million = None # Indicate no data for comparison
+
+    if pd.notna(previous_credits_per_gb) and previous_credits_per_gb > 0:
+        trend_credits_per_gb = ((current_credits_per_gb - previous_credits_per_gb) / previous_credits_per_gb * 100)
+    else:
+        trend_credits_per_gb = None # Indicate no data for comparison
     
     return {
-        'current_credits_per_million': current_credits_per_million, 'trend_credits_per_million': trend_credits_per_million,
-        'current_credits_per_gb': current_credits_per_gb, 'trend_credits_per_gb': trend_credits_per_gb
+        'current_credits_per_million': current_credits_per_million if pd.notna(current_credits_per_million) else 0,
+        'trend_credits_per_million': trend_credits_per_million,
+        'current_credits_per_gb': current_credits_per_gb if pd.notna(current_credits_per_gb) else 0,
+        'trend_credits_per_gb': trend_credits_per_gb
     }
 
-def create_kpi_card(title, value, trend, unit=""):
-    """Create a KPI card with trend indicator"""
-    trend_color = "trend-down" if trend < 0 else "trend-up"
-    trend_icon = "↘️" if trend < 0 else "↗️"
-    if trend == 0: trend_color, trend_icon = "trend-neutral", "➡️"
+def create_kpi_card(title, value, trend, period_days, unit="", value_format=".3f"):
+    """Create a KPI card with trend indicator, handling None for trend and custom formatting."""
     
+    if trend is None:
+        # Create the HTML for the trend line as a clean, single-line string
+        trend_html = '<p class="trend-neutral" style="margin: 0; font-size: 16px;">No prior period data</p>'
+    else:
+        # Determine color and icon
+        trend_color = "trend-up" if trend > 0 else "trend-down"
+        trend_icon = "↗️" if trend > 0 else "↘️"
+        if trend == 0: 
+            trend_color, trend_icon = "trend-neutral", "➡️"
+        
+        # Create the HTML for the trend line as a clean, single-line string
+        trend_html = f'<p class="{trend_color}" style="margin: 0; font-size: 16px;">{trend_icon} {abs(trend):.1f}% vs prior {period_days} days</p>'
+    
+    # Construct the final HTML for the card
     return f"""
     <div class="kpi-container">
         <h3 style="margin: 0; color: #1f77b4;">{title}</h3>
-        <h1 style="margin: 10px 0; color: #333;">{value:.3f}{unit}</h1>
-        <p class="{trend_color}" style="margin: 0; font-size: 16px;">
-            {trend_icon} {abs(trend):.1f}% vs last week
-        </p>
+        <h1 style="margin: 10px 0; color: #333;">{value:{value_format}}{unit}</h1>
+        {trend_html}
     </div>
     """
 
 def create_daily_ingestion_chart(df):
-    """
-    Creates a stacked subplot chart to display daily GB, Rows, and Credits.
-    This is the recommended approach for visualizing metrics with different scales.
-    """
+    """Creates a stacked subplot chart to display daily GB, Rows, and Credits."""
     daily_summary = df.groupby('INGESTDAY').agg({
-        'TOTALGB': 'sum',
-        'TOTALROWS': 'sum',
-        'TOTALCREDITS': 'sum'
+        'TOTALGB': 'sum', 'TOTALROWS': 'sum', 'TOTALCREDITS': 'sum'
     }).reset_index()
 
-    # Create a figure with 3 stacked subplots that share the same x-axis
     fig = make_subplots(
-        rows=3,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.1,
+        rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.1,
         subplot_titles=('Total GB Ingested', 'Total Rows Ingested', 'Total Credits Used')
     )
+    fig.add_trace(go.Bar(x=daily_summary['INGESTDAY'], y=daily_summary['TOTALGB'], name='GB', marker_color='#28a745'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=daily_summary['INGESTDAY'], y=daily_summary['TOTALROWS'], name='Rows', mode='lines', line=dict(color='#dc3545')), row=2, col=1)
+    fig.add_trace(go.Scatter(x=daily_summary['INGESTDAY'], y=daily_summary['TOTALCREDITS'], name='Credits', mode='lines', line=dict(color='#1f77b4')), row=3, col=1)
 
-    # Plot 1: Total GB (Bar Chart)
-    fig.add_trace(
-        go.Bar(x=daily_summary['INGESTDAY'], y=daily_summary['TOTALGB'], name='GB', marker_color='green'),
-        row=1, col=1
-    )
-
-    # Plot 2: Total Rows (Line Chart)
-    fig.add_trace(
-        go.Scatter(x=daily_summary['INGESTDAY'], y=daily_summary['TOTALROWS'], name='Rows', mode='lines', line=dict(color='red')),
-        row=2, col=1
-    )
-
-    # Plot 3: Total Credits (Line Chart)
-    fig.add_trace(
-        go.Scatter(x=daily_summary['INGESTDAY'], y=daily_summary['TOTALCREDITS'], name='Credits', mode='lines', line=dict(color='blue')),
-        row=3, col=1
-    )
-
-    # Update layout for a clean, unified look
-    fig.update_layout(
-        title_text="Daily Ingestion Details",
-        height=600,
-        showlegend=False  # Legend is redundant due to subplot titles
-    )
-    
-    # Assign y-axis titles
+    fig.update_layout(title_text="Daily Ingestion Details", height=600, showlegend=False)
     fig.update_yaxes(title_text="GB", row=1, col=1)
     fig.update_yaxes(title_text="Rows", row=2, col=1)
     fig.update_yaxes(title_text="Credits", row=3, col=1)
-
-    # Assign x-axis title only to the bottom chart
     fig.update_xaxes(title_text="Date", row=3, col=1)
-
     return fig
 
 def create_trend_chart(df, metric_col, title):
-    """Create trend line chart"""
+    """Create trend line chart for a daily aggregated metric."""
+    if 'CREDITS_PER' in metric_col:
+        daily_trend = df.groupby('INGESTDAY')[metric_col].mean().reset_index()
+    else:
+        daily_trend = df.groupby('INGESTDAY')[metric_col].sum().reset_index()
 
-    daily_trend = df.groupby('INGESTDAY')[metric_col].sum().reset_index()
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=daily_trend['INGESTDAY'], y=daily_trend[metric_col], mode='lines+markers', name=title, line=dict(color='#1f77b4', width=3), marker=dict(size=6)))
-    fig.update_layout(
-        legend=dict(
-            orientation="h",       # horizontal legend
-            yanchor="bottom",
-            y=1.02,                # a bit above the plot
-            xanchor="center",
-            x=0.5
-        )
-    )    
+    fig.add_trace(go.Scatter(
+        x=daily_trend['INGESTDAY'], y=daily_trend[metric_col], mode='lines+markers',
+        name=title, line=dict(color='#1f77b4', width=2), marker=dict(size=4)
+    ))
+
     temp_df = daily_trend.dropna(subset=[metric_col])
     if len(temp_df) > 1:
         x_numeric = pd.to_numeric(temp_df['INGESTDAY'])
         z = np.polyfit(x_numeric, temp_df[metric_col], 1)
         p = np.poly1d(z)
-        fig.add_trace(go.Scatter(x=temp_df['INGESTDAY'], y=p(x_numeric), mode='lines', name='Trend', line=dict(color='red', width=2, dash='dash')))
-        
-    fig.update_layout(title=title, xaxis_title="Date", yaxis_title=metric_col.replace('_', ' ').title(), hovermode='x unified', showlegend=True, height=400)
+        fig.add_trace(go.Scatter(
+            x=temp_df['INGESTDAY'], y=p(x_numeric), mode='lines',
+            name='Trend', line=dict(color='red', width=2, dash='dash')
+        ))
+
+    fig.update_layout(
+        title=title, xaxis_title="Date", yaxis_title=metric_col.replace('_', ' ').title(),
+        hovermode='x unified', showlegend=True, height=400,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    return fig
+
+def create_performance_barchart(df_current, df_previous, metric_col, agg_func, title, higher_is_better=False, value_format=',.2f'):
+    """Creates a horizontal bar chart comparing warehouse performance with % change."""
+    if df_current.empty:
+        fig = go.Figure()
+        fig.update_layout(
+            title_text=f"{title}<br><sub>No data for current period</sub>", height=400,
+            xaxis={"visible": False}, yaxis={"visible": False}
+        )
+        return fig
+
+    current_metrics = df_current.groupby('WAREHOUSE_NAME').agg(Metric=(metric_col, agg_func)).reset_index()
+    
+    if not df_previous.empty:
+        previous_metrics = df_previous.groupby('WAREHOUSE_NAME').agg(PreviousMetric=(metric_col, agg_func)).reset_index()
+        comparison_df = pd.merge(current_metrics, previous_metrics, on='WAREHOUSE_NAME', how='left')
+        comparison_df['PreviousMetric'].fillna(0, inplace=True)
+        # Handle division by zero when previous value was 0
+        comparison_df['Change'] = 100 * (comparison_df['Metric'] - comparison_df['PreviousMetric']) / comparison_df['PreviousMetric'].replace(0, np.nan)
+
+    else:
+        comparison_df = current_metrics
+        comparison_df['Change'] = np.nan # Use NaN to indicate no prior data
+
+    comparison_df = comparison_df.sort_values(by='Metric', ascending=True)
+
+    def get_change_text_and_color(change):
+        if pd.isna(change):
+            return "N/A", "#6c757d"
+        icon = "▲" if change > 0 else "▼"
+        text = f"{icon} {abs(change):.1f}%"
+        is_bad_change = (change > 0 and not higher_is_better) or (change < 0 and higher_is_better)
+        color = "#dc3545" if is_bad_change else "#28a745"
+        return text, color
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        y=comparison_df['WAREHOUSE_NAME'], x=comparison_df['Metric'], orientation='h',
+        text=comparison_df['Metric'].apply(lambda x: f'{x:{value_format}}'),
+        textposition='auto', insidetextanchor='end', marker_color='#1f77b4'
+    ))
+
+    for i, row in comparison_df.iterrows():
+        change_text, color = get_change_text_and_color(row['Change'])
+        fig.add_annotation(
+            x=row['Metric'], y=row['WAREHOUSE_NAME'], xref='x', yref='y',
+            text=change_text, showarrow=False, xanchor='left', xshift=5,
+            font=dict(color=color, size=12)
+        )
+
+    fig.update_layout(
+        title_text=title, xaxis_title=metric_col.replace('_', ' ').title(), yaxis_title=None,
+        height=max(400, len(comparison_df) * 40 + 150),
+        margin=dict(l=120, r=20, t=80, b=50),
+        xaxis=dict(range=[0, comparison_df['Metric'].max() * 1.35])
+    )
     return fig
 
 def create_warehouse_comparison(df):
-    """Create warehouse comparison chart"""
-    warehouse_metrics = df.groupby('WAREHOUSE_NAME').agg({'CREDITS_PER_MILLION_ROWS': 'mean', 'CREDITS_PER_GB': 'mean', 'TOTALCREDITS': 'sum'}).reset_index()
-    fig = make_subplots(rows=1, cols=2, subplot_titles=('Credits per Million Rows', 'Credits per GB'))
-    fig.add_trace(go.Bar(x=warehouse_metrics['WAREHOUSE_NAME'], y=warehouse_metrics['CREDITS_PER_MILLION_ROWS'], name='Credits/Million Rows', marker_color='lightblue'), row=1, col=1)
-    fig.add_trace(go.Bar(x=warehouse_metrics['WAREHOUSE_NAME'], y=warehouse_metrics['CREDITS_PER_GB'], name='Credits/GB', marker_color='lightcoral'), row=1, col=2)
-    fig.update_layout(title_text="Warehouse Performance Comparison", showlegend=False, height=400)
+    """Original warehouse comparison chart function (now supplementary)."""
+    df_with_metrics = add_efficiency_metrics(df.copy())
+    if df_with_metrics.empty:
+        fig = go.Figure()
+        fig.update_layout(title_text="Original Warehouse Performance View<br><sub>No data for period</sub>", height=400, xaxis={"visible": False}, yaxis={"visible": False})
+        return fig
+        
+    warehouse_metrics = df_with_metrics.groupby('WAREHOUSE_NAME').agg({
+        'CREDITS_PER_MILLION_ROWS': 'mean', 'CREDITS_PER_GB': 'mean', 'TOTALCREDITS': 'sum'
+    }).reset_index()
+
+    fig = make_subplots(rows=1, cols=2, subplot_titles=('Avg. Credits per Million Rows', 'Avg. Credits per GB'))
+    fig.add_trace(go.Bar(
+        x=warehouse_metrics['WAREHOUSE_NAME'], y=warehouse_metrics['CREDITS_PER_MILLION_ROWS'],
+        name='Credits/Million Rows', marker_color='lightblue'), row=1, col=1)
+    fig.add_trace(go.Bar(
+        x=warehouse_metrics['WAREHOUSE_NAME'], y=warehouse_metrics['CREDITS_PER_GB'],
+        name='Credits/GB', marker_color='lightcoral'), row=1, col=2)
+    fig.update_layout(title_text="Original Warehouse Performance View", showlegend=False, height=400)
     return fig
+
 
 def main():
     """Main dashboard function"""
-    st.title("📊 Snowflake Data Ingestion Metrics Dashboard")
+    st.title("📊 Data Ingestion Metrics Dashboard")
     st.markdown("Monitor your data ingestion performance and costs")
     
-    # Sidebar filters
     st.sidebar.header("Filters")
-    
-    with st.spinner("Loading data from Snowflake..."):
-        df = load_data_from_snowflake()
-    
-    if df.empty:
-        st.error("No data available for the selected period.")
-        return
-    
-    df['CREDITS_PER_MILLION_ROWS'] = (df['TOTALCREDITS'] / df['TOTALROWS']) * 1000000
-    df['CREDITS_PER_GB'] = df['TOTALCREDITS'] / df['TOTALGB']
-    
-    # MODIFIED: Date Slider
-    all_dates = sorted(df['INGESTDAY'].dt.date.unique())
-    date_range = st.sidebar.select_slider(
-        "Select Date Range",
-        options=all_dates,
-        value=(all_dates[0], all_dates[-1]),
-        format_func=lambda date: date.strftime('%b %d, %Y')
+    period_days = st.sidebar.selectbox(
+        "Select Period",
+        options=[7, 30, 90, 180],
+        format_func=lambda x: f"Last {x} Days",
+        index=1 
     )
+
+    with st.spinner("Loading and processing data..."):
+        # Pass the selected period to the data loading function
+        df_master = load_data_from_snowflake(period_days)
     
-    # MODIFIED: Warehouse selection with Select/Unselect All
+    if df_master.empty:
+        st.error("No data available to display.")
+        return
+
+    # The master dataframe is now already filtered by the query, 
+    # but we still need to separate it into current and prior periods in pandas.
+    max_date = df_master['INGESTDAY'].max()
+    start_date = max_date - timedelta(days=period_days)
+    previous_period_end_date = start_date - timedelta(days=1)
+    previous_period_start_date = previous_period_end_date - timedelta(days=period_days)
+
     st.sidebar.markdown("---")
     st.sidebar.write("Filter Warehouses")
-    all_warehouses = list(df['WAREHOUSE_NAME'].unique())
+    all_warehouses = sorted(list(df_master['WAREHOUSE_NAME'].unique()))
     
-    # Use session state to manage selections
+    # This logic prevents errors by ensuring the session state only contains valid options.
     if 'warehouse_selection' not in st.session_state:
+        # Initialize state if it's the very first run
         st.session_state.warehouse_selection = all_warehouses
+    else:
+        # On subsequent runs, filter the state to only include warehouses present in the new data
+        st.session_state.warehouse_selection = [
+            wh for wh in st.session_state.warehouse_selection if wh in all_warehouses
+        ]
         
     btn_col1, btn_col2 = st.sidebar.columns(2)
     if btn_col1.button("Select All", use_container_width=True):
@@ -321,83 +427,155 @@ def main():
     if btn_col2.button("Unselect All", use_container_width=True):
         st.session_state.warehouse_selection = []
         
+    # The default value is now guaranteed to be a subset of the options
     warehouses = st.sidebar.multiselect(
-        "Select Warehouses",
-        options=all_warehouses,
-        default=st.session_state.warehouse_selection,
-        label_visibility="collapsed"
+        "Select Warehouses", options=all_warehouses,
+        default=st.session_state.warehouse_selection, label_visibility="collapsed"
     )
-    st.session_state.warehouse_selection = warehouses # Update state with current selection
+    st.session_state.warehouse_selection = warehouses
 
-    # Filter data based on sidebar selections
-    if len(date_range) == 2:
-        df_filtered = df[
-            (df['INGESTDAY'].dt.date >= date_range[0]) &
-            (df['INGESTDAY'].dt.date <= date_range[1]) &
-            (df['WAREHOUSE_NAME'].isin(warehouses))
-        ]
-    else:
-        df_filtered = df[df['WAREHOUSE_NAME'].isin(warehouses)]
+    df_filtered = df_master[
+        (df_master['INGESTDAY'] > start_date) & (df_master['INGESTDAY'] <= max_date) &
+        (df_master['WAREHOUSE_NAME'].isin(warehouses))
+    ]
+    df_previous_period = df_master[
+        (df_master['INGESTDAY'] > previous_period_start_date) & (df_master['INGESTDAY'] <= previous_period_end_date) &
+        (df_master['WAREHOUSE_NAME'].isin(warehouses))
+    ]
+    
+    df_all_time = df_master[df_master['WAREHOUSE_NAME'].isin(warehouses)]
 
     if df_filtered.empty:
         st.warning("No data matches your current filter selection.")
         return
 
+    # Calculate efficiency metrics *before* they are used.
+    df_filtered = add_efficiency_metrics(df_filtered)
+    df_previous_period = add_efficiency_metrics(df_previous_period)
+    
     # --- Dashboard Layout ---
-    kpis = calculate_kpis(df_filtered)
-    
     st.header("📈 Key Performance Indicators")
-    col1, col2 = st.columns(2)
+    st.markdown("Key cost and efficiency metrics for the selected period.")
+    
+    # --- KPI Calculations ---
+    avg_kpis = calculate_kpis(df_filtered.copy(), df_previous_period.copy())
+    
+    current_credits_total = df_filtered['TOTALCREDITS'].sum()
+    previous_credits_total = df_previous_period['TOTALCREDITS'].sum()
+    if previous_credits_total > 0:
+        trend_credits_total = ((current_credits_total - previous_credits_total) / previous_credits_total * 100)
+    else:
+        trend_credits_total = None # No prior data for comparison
+
+    # --- KPI Display ---
+    col1, col2, col3 = st.columns(3)
     with col1:
-        st.markdown(create_kpi_card("Credits per Million Rows", kpis['current_credits_per_million'], kpis['trend_credits_per_million']), unsafe_allow_html=True)
+        st.markdown(create_kpi_card(
+            "Total Credits Used",
+            current_credits_total,
+            trend_credits_total,
+            period_days,
+            value_format=',.2f'
+        ), unsafe_allow_html=True)
     with col2:
-        st.markdown(create_kpi_card("Credits per GB Ingested", kpis['current_credits_per_gb'], kpis['trend_credits_per_gb']), unsafe_allow_html=True)
+        st.markdown(create_kpi_card(
+            "Avg Credits / Million Rows",
+            avg_kpis['current_credits_per_million'],
+            avg_kpis['trend_credits_per_million'],
+            period_days
+        ), unsafe_allow_html=True)
+    with col3:
+        st.markdown(create_kpi_card(
+            "Avg Credits / GB Ingested",
+            avg_kpis['current_credits_per_gb'],
+            avg_kpis['trend_credits_per_gb'],
+            period_days
+        ), unsafe_allow_html=True)
 
-    st.markdown('<br><br>', unsafe_allow_html=True)
 
-    st.header("📋 Summary Statistics")
-    col1, col2, col3, col4 = st.columns(4)
-    total_rows_all = df['TOTALROWS'].sum()
-    total_gb_all = df['TOTALGB'].sum()
-    total_credits_all = df['TOTALCREDITS'].sum()
-    
-    col1.metric("Total Rows Ingested", f"{df_filtered['TOTALROWS'].sum():,.0f}", f"{((df_filtered['TOTALROWS'].sum() / total_rows_all) * 100):.1f}% of Total")
-    col2.metric("Total GB Ingested", f"{df_filtered['TOTALGB'].sum():,.0f}", f"{((df_filtered['TOTALGB'].sum() / total_gb_all) * 100):.1f}% of Total")
-    col3.metric("Total Credits Used", f"{df_filtered['TOTALCREDITS'].sum():,.2f}", f"{((df_filtered['TOTALCREDITS'].sum() / total_credits_all) * 100):.1f}% of Total")
-    avg_efficiency = df_filtered['TOTALROWS'].sum() / df_filtered['TOTALCREDITS'].sum() if df_filtered['TOTALCREDITS'].sum() else 0
-    col4.metric("Rows per Credit", f"{avg_efficiency:,.0f}", "Efficiency Metric")
-    
     st.markdown('<br>', unsafe_allow_html=True)
-    st.markdown("---") # Visual separator
+    st.header("📋 Summary Statistics")
+    
+    # --- Summary Statistics Calculation with Error Handling ---
+    current_rows = df_filtered['TOTALROWS'].sum()
+    previous_rows = df_previous_period['TOTALROWS'].sum()
+    total_rows_all = df_all_time['TOTALROWS'].sum()
+    if previous_rows > 0:
+        delta_rows_text = f"{((current_rows - previous_rows) / previous_rows * 100):.1f}%"
+    else:
+        delta_rows_text = "N/A"
+    percent_of_total_rows = (current_rows / total_rows_all * 100) if total_rows_all > 0 else 0
 
-    # --- NEW CHART SECTION ---
+    current_gb = df_filtered['TOTALGB'].sum()
+    previous_gb = df_previous_period['TOTALGB'].sum()
+    total_gb_all = df_all_time['TOTALGB'].sum()
+    if previous_gb > 0:
+        delta_gb_text = f"{((current_gb - previous_gb) / previous_gb * 100):.1f}%"
+    else:
+        delta_gb_text = "N/A"
+    percent_of_total_gb = (current_gb / total_gb_all * 100) if total_gb_all > 0 else 0
+
+    col1, col2, col3 = st.columns(3)
+    # MODIFICATION: Using the new format_large_number function
+    col1.metric("Total Rows Ingested", format_large_number(current_rows), delta=delta_rows_text, help=f"This is {percent_of_total_rows:.1f}% of total rows in the dataset.")
+    col2.metric("Total GB Ingested", f"{current_gb:,.0f}", delta=delta_gb_text, help=f"This is {percent_of_total_gb:.1f}% of total GB in the dataset.")
+    avg_efficiency = current_rows / current_credits_total if current_credits_total > 0 else 0
+    # MODIFICATION: Using the new format_large_number function
+    col3.metric("Rows per Credit", format_large_number(avg_efficiency), help="Overall efficiency for the period.")
+    
+    st.markdown("---")
     st.header("💾 Daily Ingestion Volume")
     st.plotly_chart(create_daily_ingestion_chart(df_filtered), use_container_width=True)
     
-    st.markdown('<br>', unsafe_allow_html=True)
-    st.markdown("---") # Visual separator
-
+    st.markdown("---")
     st.header("📊 Trend Analysis")
-    col1, col2 = st.columns(2)
-    with col1:
+    col1_trend, col2_trend = st.columns(2)
+    with col1_trend:
         st.plotly_chart(create_trend_chart(df_filtered, 'CREDITS_PER_MILLION_ROWS', 'Credits per Million Rows Trend'), use_container_width=True)
-    with col2:
+    with col2_trend:
         st.plotly_chart(create_trend_chart(df_filtered, 'CREDITS_PER_GB', 'Credits per GB Trend'), use_container_width=True)
     
-    col3, col4 = st.columns(2)
-    with col3:
+    col3_trend, col4_trend = st.columns(2)
+    with col3_trend:
         st.plotly_chart(create_trend_chart(df_filtered, 'TOTALROWS', 'Number of Rows per Day Trend'), use_container_width=True)
-    with col4:
+    with col4_trend:
         st.plotly_chart(create_trend_chart(df_filtered, 'TOTALGB', 'Number of GB per Day Trend'), use_container_width=True)
 
-    st.header("🏭 Warehouse Performance Comparison")
-    st.plotly_chart(create_warehouse_comparison(df_filtered), use_container_width=True)
+    st.markdown("---")
+    st.header("🏭 Warehouse Performance")
+    st.markdown("Compare warehouse costs and efficiency against the prior period.")
     
+    col1a, col2a, col3a = st.columns(3)
+    with col1a:
+        st.plotly_chart(create_performance_barchart(
+            df_current=df_filtered, df_previous=df_previous_period,
+            metric_col='TOTALCREDITS', agg_func='sum',
+            title='Total Credits Used',
+            higher_is_better=False, value_format=',.0f'
+        ), use_container_width=True)
+    with col2a:
+        st.plotly_chart(create_performance_barchart(
+            df_current=df_filtered, df_previous=df_previous_period,
+            metric_col='CREDITS_PER_GB', agg_func='mean',
+            title='Avg. Credits per GB',
+            higher_is_better=False
+        ), use_container_width=True)
+    with col3a:
+        st.plotly_chart(create_performance_barchart(
+            df_current=df_filtered, df_previous=df_previous_period,
+            metric_col='CREDITS_PER_MILLION_ROWS', agg_func='mean',
+            title='Avg. Credits / Million Rows',
+            higher_is_better=False
+        ), use_container_width=True)
+
+    # Original chart is kept to satisfy "do not remove" constraint
+    with st.expander("Original Warehouse Comparison View"):
+        st.plotly_chart(create_warehouse_comparison(df_filtered), use_container_width=True)
 
     with st.expander("📋 View Raw Data"):
         st.dataframe(df_filtered.sort_values('INGESTDAY', ascending=False), use_container_width=True)
     
-    if st.button("🔄 Refresh Data"):
+    if st.sidebar.button("🔄 Refresh Data"):
         st.cache_data.clear()
         st.rerun()
 
