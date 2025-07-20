@@ -569,8 +569,8 @@ def main():
         ), use_container_width=True)
 
     # Original chart is kept to satisfy "do not remove" constraint
-    with st.expander("Original Warehouse Comparison View"):
-        st.plotly_chart(create_warehouse_comparison(df_filtered), use_container_width=True)
+    # with st.expander("Original Warehouse Comparison View"):
+    #     st.plotly_chart(create_warehouse_comparison(df_filtered), use_container_width=True)
 
     with st.expander("📋 View Raw Data"):
         st.dataframe(df_filtered.sort_values('INGESTDAY', ascending=False), use_container_width=True)
