@@ -535,11 +535,11 @@ def main():
     with col2_trend:
         st.plotly_chart(create_trend_chart(df_filtered, 'CREDITS_PER_GB', 'Credits per GB Trend'), use_container_width=True)
     
-    col3_trend, col4_trend = st.columns(2)
-    with col3_trend:
-        st.plotly_chart(create_trend_chart(df_filtered, 'TOTALROWS', 'Number of Rows per Day Trend'), use_container_width=True)
-    with col4_trend:
-        st.plotly_chart(create_trend_chart(df_filtered, 'TOTALGB', 'Number of GB per Day Trend'), use_container_width=True)
+    # col3_trend, col4_trend = st.columns(2)
+    # with col3_trend:
+    #     st.plotly_chart(create_trend_chart(df_filtered, 'TOTALROWS', 'Number of Rows per Day Trend'), use_container_width=True)
+    # with col4_trend:
+    #     st.plotly_chart(create_trend_chart(df_filtered, 'TOTALGB', 'Number of GB per Day Trend'), use_container_width=True)
 
     st.markdown("---")
     st.header("🏭 Warehouse Performance")
