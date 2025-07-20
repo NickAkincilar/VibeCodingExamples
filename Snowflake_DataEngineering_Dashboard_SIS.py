@@ -65,7 +65,7 @@ def load_data_from_snowflake(period_days):
     """Load data from Snowflake using a dynamic period in the WHERE clause."""
     session = init_snowflake_connection()
     
-    if session is None or 1==1:
+    if session is None or 1==0:
         # Pass period_days to generate sufficient sample data
         return generate_sample_data(period_days)
     
