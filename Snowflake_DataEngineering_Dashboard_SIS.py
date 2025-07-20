@@ -65,7 +65,7 @@ def load_data_from_snowflake(period_days):
     """Load data from Snowflake using a dynamic period in the WHERE clause."""
     session = init_snowflake_connection()
     
-    if session is None:
+    if session is None or 1==1:
         # Pass period_days to generate sufficient sample data
         return generate_sample_data(period_days)
     
@@ -475,7 +475,7 @@ def main():
             current_credits_total,
             trend_credits_total,
             period_days,
-            value_format=',.2f'
+            value_format=',.0f'
         ), unsafe_allow_html=True)
     with col2:
         st.markdown(create_kpi_card(
