@@ -150,7 +150,7 @@ def generate_sample_data(period_days):
             base_gb = base_rows / (np.random.randint(20000, 120000) * np.random.randint(5, 25))
             size_multiplier = {'SMALL': 1, 'MEDIUM': 2, 'LARGE': 4, 'X-LARGE': 8}
             warehouse_size = np.random.choice(warehouse_sizes)
-            credits = max(0.1, (base_gb * 0.1 * size_multiplier[warehouse_size]) + np.random.normal(0, 0.5)) * 10
+            credits = max(0.1, (base_gb * 0.1 * size_multiplier[warehouse_size]) + np.random.normal(0, 0.5)) / 10
             data.append({
                 'INGESTDAY': date, 'WAREHOUSE_NAME': warehouse, 'WAREHOUSE_SIZE': warehouse_size,
                 'TOTALROWS': int(base_rows), 'TOTALGB': round(base_gb, 2), 'TOTALCREDITS': round(credits, 3)
