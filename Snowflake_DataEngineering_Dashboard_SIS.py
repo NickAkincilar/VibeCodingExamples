@@ -60,7 +60,7 @@ def init_snowflake_connection():
         return session
 
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
+@st.cache_data(ttl=3600)  # Cache for 60 minutes
 def load_data_from_snowflake(period_days):
     """Load data from Snowflake using a dynamic period in the WHERE clause."""
     session = init_snowflake_connection()
