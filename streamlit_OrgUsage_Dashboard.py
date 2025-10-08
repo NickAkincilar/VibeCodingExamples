@@ -1,6 +1,13 @@
 # Nick Akincilar - 10/8/2025 
 # Use a role like AccountAdmin, OrgAdmin or a custom role that has access to SNOWFLAKE.ORGANIZATION_USAGE views
 
+# STEPS TO DEPLOY
+# 1. make sure you have the role with access to ORGANIZATION_USAGE views seelected at BOTTOM-RIGHT
+# 2. Projects > Streamlit
+# 3. Create a new Streamlit app
+# 4. Paste this code by replace all the existing code
+# 5. Click on PACKAGES button on top-left and search & add PLOTLY chart package.
+
 
 import streamlit as st
 import pandas as pd
