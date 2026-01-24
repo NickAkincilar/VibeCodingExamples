@@ -1,4 +1,5 @@
 -- dbt INSERT-OVERWRITE materialization macro
+-- usage: {{ config(materialized='insert_overwrite') }}
 
 {% materialization insert_overwrite, adapter='snowflake' %}
 
