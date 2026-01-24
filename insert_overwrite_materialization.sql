@@ -1,3 +1,5 @@
+-- dbt INSERT-OVERWRITE materialization macro
+
 {% materialization insert_overwrite, adapter='snowflake' %}
 
     {%- set target_relation = this.incorporate(type='table') -%}
