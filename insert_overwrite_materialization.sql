@@ -8,7 +8,8 @@
     - Table doesn't exist: Creates new table via CREATE TABLE AS
     - Target is a view: Raises error
     - Table exists with matching schema: INSERT OVERWRITE (fastest)
-    - Table exists with different schema: ALTER TABLE to add/drop columns, then INSERT OVERWRITE
+    - Table exists with some schema overlap: ALTER TABLE to add/drop columns, then INSERT OVERWRITE
+    - Table exists with ALL columns different: CREATE OR REPLACE TABLE (CTAS)
     
     Usage:
         {{ config(materialized='insert_overwrite') }}
@@ -86,27 +87,41 @@
             drop table if exists {{ tmp_relation }}
         {% endcall %}
 
-        {# Drop columns that no longer exist in source query #}
-        {% if cols_to_drop | length > 0 %}
-            {% call statement('drop_columns') %}
-                alter table {{ target_relation }} drop column {{ cols_to_drop | join(', ') }}
+        {# Check if ALL columns are different (no overlap) - use CTAS instead #}
+        {% set has_common_columns = (cols_to_drop | length < target_col_names | length) or (cols_to_add | length < source_col_names | length) %}
+
+        {% if not has_common_columns %}
+            {# All columns are different - recreate table with CTAS #}
+            {% call statement('main') %}
+                create or replace table {{ target_relation }} as (
+                    {{ sql }}
+                )
+            {% endcall %}
+        {% else %}
+            {# Some columns overlap - use ALTER TABLE to sync schema #}
+
+            {# Drop columns that no longer exist in source query #}
+            {% if cols_to_drop | length > 0 %}
+                {% call statement('drop_columns') %}
+                    alter table {{ target_relation }} drop column {{ cols_to_drop | join(', ') }}
+                {% endcall %}
+            {% endif %}
+
+            {# Add new columns from source query #}
+            {% if cols_to_add | length > 0 %}
+                {% for col in cols_to_add %}
+                    {% call statement('add_column_' ~ loop.index) %}
+                        alter table {{ target_relation }} add column {{ col.name }} {{ col.dtype }}
+                    {% endcall %}
+                {% endfor %}
+            {% endif %}
+
+            {# Perform INSERT OVERWRITE to atomically replace all data #}
+            {% call statement('main') %}
+                insert overwrite into {{ target_relation }}
+                {{ sql }}
             {% endcall %}
         {% endif %}
-
-        {# Add new columns from source query #}
-        {% if cols_to_add | length > 0 %}
-            {% for col in cols_to_add %}
-                {% call statement('add_column_' ~ loop.index) %}
-                    alter table {{ target_relation }} add column {{ col.name }} {{ col.dtype }}
-                {% endcall %}
-            {% endfor %}
-        {% endif %}
-
-        {# Perform INSERT OVERWRITE to atomically replace all data #}
-        {% call statement('main') %}
-            insert overwrite into {{ target_relation }}
-            {{ sql }}
-        {% endcall %}
     {% endif %}
 
     {# Run post-hooks #}
